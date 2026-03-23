@@ -14,6 +14,16 @@ python3 ubuntu_hacker_terminal.py
 python3 kali_hacker_terminal.py
 ```
 
+## Install Kali App Menu Launcher
+From inside this repository on your Kali machine:
+
+```bash
+bash install_kali_launcher.sh
+```
+
+This creates:
+- `~/.local/share/applications/KaliHackerTerminal.desktop`
+
 ## Notes
 - Both variants share `hacker_terminal_base.py`.
 - Desktop launcher files are included:
