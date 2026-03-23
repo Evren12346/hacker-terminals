@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import signal
 import subprocess
 import threading
@@ -14,6 +15,8 @@ from tkinter import font as tkfont
 
 class HackerTerminal:
     """A lightweight terminal UI that talks to a real bash process through a PTY."""
+
+    ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
     def __init__(self, config: dict[str, str]) -> None:
         self.config = config
@@ -236,8 +239,9 @@ class HackerTerminal:
         self.root.after(20, self._flush_output)
 
     def _append_text(self, text: str) -> None:
+        clean_text = self.ANSI_ESCAPE_RE.sub("", text)
         self.output.configure(state="normal")
-        self.output.insert("end", text)
+        self.output.insert("end", clean_text)
         self.output.see("end")
         self.output.configure(state="disabled")
 
