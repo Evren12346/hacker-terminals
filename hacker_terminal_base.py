@@ -18,7 +18,24 @@ from tkinter import font as tkfont
 class HackerTerminal:
     """A lightweight terminal UI that talks to a real bash process through a PTY."""
 
-    ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+    # Strip CSI sequences, OSC sequences (window-title etc.), and bare ESC codes.
+    ANSI_ESCAPE_RE = re.compile(
+        r"\x1b(?:\[[0-?]*[ -/]*[@-~]"       # CSI  — e.g. \x1b[32m
+        r"|\][^\x07\x1b]*(?:\x07|\x1b\\)"   # OSC  — e.g. \x1b]0;title\x07
+        r"|[@-_][0-?]*[ -/]*[@-~]"          # Fe   — e.g. \x1b= \x1b>
+        r"|.)"                               # bare ESC + one char
+    )
+
+    _TICKER_TEMPLATES = [
+        "NET TRACE :: {noise} :: AUTH-OK",
+        "PACKET RELAY :: {noise} :: ENCRYPTED",
+        "CIPHER KEY :: {noise} :: ACTIVE",
+        "MEM SCAN :: {noise} :: NOMINAL",
+        "UPTIME :: {uptime} :: SYS-STABLE",
+        "KERNEL {noise} :: HARDENED :: SECURE-BOOT",
+        "ENTROPY :: {noise} :: HIGH",
+        "THREAT LEVEL :: {noise} :: CONTAINED",
+    ]
 
     def __init__(self, config: dict[str, str]) -> None:
         self.config = config
@@ -32,8 +49,15 @@ class HackerTerminal:
         self.command_history: list[str] = []
         self.history_index = 0
         self.prompt_visible = True
-        self.signal_frames = ["SIG [|||||]", "SIG [|||| ]", "SIG [|||  ]", "SIG [||   ]", "SIG [|    ]"]
+        self.signal_frames = [
+            "SIG [|||||]", "SIG [|||| ]", "SIG [|||  ]", "SIG [||   ]",
+            "SIG [|    ]", "SIG [     ]", "SIG [|    ]", "SIG [||   ]",
+        ]
         self.signal_index = 0
+        self._ticker_index = 0
+        self._session_start = time.monotonic()
+        self._base_font_size = int(config.get("output_font_size", "12"))
+        self._current_font_size = self._base_font_size
 
         self.boot_lines: list[str] = config.get(
             "boot_lines",
@@ -63,10 +87,10 @@ class HackerTerminal:
         self.root.after(340, self._update_ticker)
 
     def _build_ui(self) -> None:
-        title_font = tkfont.Font(family=self.config.get("font", "DejaVu Sans Mono"), size=14, weight="bold")
-        body_font = tkfont.Font(
+        self._title_font = tkfont.Font(family=self.config.get("font", "DejaVu Sans Mono"), size=14, weight="bold")
+        self._body_font = tkfont.Font(
             family=self.config.get("font", "DejaVu Sans Mono"),
-            size=int(self.config.get("output_font_size", "12")),
+            size=self._current_font_size,
         )
 
         top_bar = tk.Frame(self.root, bg=self.config["panel"])
@@ -77,7 +101,7 @@ class HackerTerminal:
             text=self.config["banner"],
             bg=self.config["panel"],
             fg=self.config["accent"],
-            font=title_font,
+            font=self._title_font,
             pady=8,
         )
         title.pack(side="left", padx=12)
@@ -135,7 +159,7 @@ class HackerTerminal:
             selectbackground=self.config["select"],
             relief="flat",
             wrap="none",
-            font=body_font,
+            font=self._body_font,
             padx=12,
             pady=10,
         )
@@ -183,7 +207,7 @@ class HackerTerminal:
             fg=self.config["fg"],
             insertbackground=self.config["accent"],
             relief="flat",
-            font=body_font,
+            font=self._body_font,
         )
         self.command_entry.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
         self.command_entry.configure(state="disabled")
@@ -208,6 +232,18 @@ class HackerTerminal:
         self.command_entry.bind("<Up>", self._history_up)
         self.command_entry.bind("<Down>", self._history_down)
         self.command_entry.bind("<Control-l>", self._clear_via_shortcut)
+        self.command_entry.bind("<Control-c>", self._send_sigint)
+        self.command_entry.bind("<Control-d>", self._send_eof)
+        self.command_entry.bind("<Tab>", self._send_tab)
+
+        # Copy selected text from output pane with Ctrl+Shift+C
+        self.root.bind("<Control-Shift-c>", self._copy_output_selection)
+
+        # Font scaling
+        self.root.bind("<Control-equal>", self._font_size_up)
+        self.root.bind("<Control-plus>", self._font_size_up)
+        self.root.bind("<Control-minus>", self._font_size_down)
+        self.root.bind("<Control-0>", self._font_size_reset)
 
     def _start_shell(self) -> None:
         self.master_fd, slave_fd = os.openpty()
@@ -232,8 +268,13 @@ class HackerTerminal:
         intro = (
             f"[{self.config['codename']}] shell online\n"
             "Running real /bin/bash in a persistent session.\n"
-            "Use command history with Up/Down arrows.\n"
-            "Type 'exit' to close shell process.\n\n"
+            "  Up/Down        : command history\n"
+            "  Tab            : shell tab-completion\n"
+            "  Ctrl+C         : interrupt running process\n"
+            "  Ctrl+D         : send EOF / logout\n"
+            "  Ctrl+L         : clear screen\n"
+            "  Ctrl++ / Ctrl- : adjust font size  |  Ctrl+0 : reset\n"
+            "  Ctrl+Shift+C   : copy selected output\n\n"
         )
         self._append_text(intro)
 
@@ -268,8 +309,12 @@ class HackerTerminal:
     def _update_ticker(self) -> None:
         if not self.root.winfo_exists():
             return
-        noise = "".join(random.choice("01ABCDEF") for _ in range(32))
-        self.ticker.configure(text=f"NET TRACE :: {noise} :: AUTH-OK")
+        noise = "".join(random.choice("0123456789ABCDEF") for _ in range(28))
+        elapsed = int(time.monotonic() - self._session_start)
+        uptime_str = f"{elapsed // 3600:02d}:{(elapsed % 3600) // 60:02d}:{elapsed % 60:02d}"
+        template = self._TICKER_TEMPLATES[self._ticker_index % len(self._TICKER_TEMPLATES)]
+        self._ticker_index += 1
+        self.ticker.configure(text=template.format(noise=noise, uptime=uptime_str))
         self.root.after(280, self._update_ticker)
 
     def _run_boot_sequence(self) -> None:
@@ -321,6 +366,60 @@ class HackerTerminal:
     def _clear_via_shortcut(self, _event: tk.Event) -> str:
         self._clear_output_screen()
         return "break"
+
+    def _send_sigint(self, _event: tk.Event) -> str:
+        """Send Ctrl+C (SIGINT) byte to the shell PTY."""
+        if self.master_fd is not None and self.boot_complete:
+            os.write(self.master_fd, b"\x03")
+        return "break"
+
+    def _send_eof(self, _event: tk.Event) -> str:
+        """Send Ctrl+D (EOF) byte to the shell PTY."""
+        if self.master_fd is not None and self.boot_complete:
+            os.write(self.master_fd, b"\x04")
+        return "break"
+
+    def _send_tab(self, _event: tk.Event) -> str:
+        """Forward Tab to the PTY for bash tab-completion.
+
+        Any text currently in the entry is flushed to bash first so readline
+        can expand it, then the entry is cleared.  Completions (or the
+        expanded command) appear in the output pane.
+        """
+        if self.master_fd is None or not self.boot_complete:
+            return "break"
+        partial = self.command_entry.get()
+        if partial:
+            os.write(self.master_fd, partial.encode())
+            self.command_entry.delete(0, "end")
+        os.write(self.master_fd, b"\t")
+        return "break"
+
+    def _copy_output_selection(self, _event: tk.Event) -> str:
+        """Copy the currently selected text in the output pane to the clipboard."""
+        try:
+            selected = self.output.get(tk.SEL_FIRST, tk.SEL_LAST)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(selected)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _font_size_up(self, _event: tk.Event) -> str:
+        self._set_font_size(self._current_font_size + 1)
+        return "break"
+
+    def _font_size_down(self, _event: tk.Event) -> str:
+        self._set_font_size(max(6, self._current_font_size - 1))
+        return "break"
+
+    def _font_size_reset(self, _event: tk.Event) -> str:
+        self._set_font_size(self._base_font_size)
+        return "break"
+
+    def _set_font_size(self, size: int) -> None:
+        self._current_font_size = size
+        self._body_font.configure(size=size)
 
     def _submit_command(self) -> None:
         if self.master_fd is None:

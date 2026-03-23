@@ -9,7 +9,7 @@ KALI_CONFIG = {
     "banner": "KALI // RED CELL // ACCESS CORE",
     "codename": "KALI-RTI",
     "prompt": "root@kali:~#",
-    "geometry": "1060x700",
+    "geometry": "1100x720",
     "font": "DejaVu Sans Mono",
     "output_font_size": "12",
     "bg": "#000300",
@@ -22,6 +22,15 @@ KALI_CONFIG = {
     "button_bg": "#092809",
     "button_active_bg": "#186318",
     "button_fg": "#e4ffe4",
+    "boot_lines": [
+        "[ OK ] Mounting encrypted filesystem...",
+        "[ OK ] Loading kernel security modules...",
+        "[ OK ] Establishing PTY transport...",
+        "[ OK ] Initializing exploit framework...",
+        "[ OK ] Enabling stealth mode...",
+        "[ OK ] Arming prompt subsystem...",
+        "[ OK ] Red cell is online. Stay quiet.",
+    ],
 }
 
 

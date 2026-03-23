@@ -9,7 +9,7 @@ UBUNTU_CONFIG = {
     "banner": "UBUNTU // ACCESS NODE // OPERATOR",
     "codename": "UBN-XTERM",
     "prompt": "user@ubuntu:~$",
-    "geometry": "1060x700",
+    "geometry": "1100x720",
     "font": "DejaVu Sans Mono",
     "output_font_size": "12",
     "bg": "#010401",
@@ -22,6 +22,14 @@ UBUNTU_CONFIG = {
     "button_bg": "#0a2b0a",
     "button_active_bg": "#185618",
     "button_fg": "#e8ffe8",
+    "boot_lines": [
+        "[ OK ] Initializing secure terminal bus...",
+        "[ OK ] Loading shell transport layer...",
+        "[ OK ] Mounting command history cache...",
+        "[ OK ] Verifying system integrity...",
+        "[ OK ] Establishing authenticated session...",
+        "[ OK ] Node is ready. Welcome, operator.",
+    ],
 }
 
 
