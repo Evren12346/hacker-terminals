@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import queue
-import random
 import signal
 import subprocess
 import threading
@@ -48,7 +47,7 @@ class HackerTerminal:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(20, self._flush_output)
-        self.root.after(120, self._animate_scanline)
+        self.root.after(220, self._animate_status_pulse)
         self.root.after(180, self._run_boot_sequence)
 
     def _build_ui(self) -> None:
@@ -92,16 +91,6 @@ class HackerTerminal:
         )
         self.output.pack(fill="both", expand=True, padx=10, pady=(10, 6))
         self.output.configure(state="disabled")
-
-        self.scanline = tk.Canvas(
-            self.output,
-            bg=self.config["bg"],
-            highlightthickness=0,
-            bd=0,
-        )
-        self.scanline.place(relx=0, rely=0, relwidth=1, relheight=1)
-        self.scanline.bind("<Configure>", self._draw_scanlines)
-        self.scanline.configure(state="disabled")
 
         prompt_frame = tk.Frame(self.root, bg=self.config["panel"])
         prompt_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -176,24 +165,13 @@ class HackerTerminal:
         )
         self._append_text(intro)
 
-    def _draw_scanlines(self, _event: tk.Event | None = None) -> None:
-        self.scanline.delete("grid")
-        width = max(self.scanline.winfo_width(), 1)
-        height = max(self.scanline.winfo_height(), 1)
-        line_color = self.config.get("scanline_color", "#0f2012")
-        for y in range(0, height, 4):
-            self.scanline.create_line(0, y, width, y, fill=line_color, tags="grid")
-
-    def _animate_scanline(self) -> None:
+    def _animate_status_pulse(self) -> None:
         if not self.root.winfo_exists():
             return
-        self.scanline.delete("pulse")
-        width = max(self.scanline.winfo_width(), 1)
-        height = max(self.scanline.winfo_height(), 1)
-        y = random.randint(0, max(height - 1, 0))
-        pulse_color = self.config.get("scanline_pulse", self.config["accent"])
-        self.scanline.create_line(0, y, width, y, fill=pulse_color, tags="pulse")
-        self.root.after(140, self._animate_scanline)
+        current_fg = self.status.cget("fg")
+        next_fg = self.config["accent"] if current_fg == self.config["accent2"] else self.config["accent2"]
+        self.status.configure(fg=next_fg)
+        self.root.after(380, self._animate_status_pulse)
 
     def _run_boot_sequence(self) -> None:
         if self.boot_index < len(self.boot_lines):
