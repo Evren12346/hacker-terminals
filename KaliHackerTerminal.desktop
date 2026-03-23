@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Kali Hacker Terminal
+Comment=Red-team style terminal shell inspired by Kali Linux
+Exec=python3 /home/evren-bartlett/Documents/Coding/kali_hacker_terminal.py
+Path=/home/evren-bartlett/Documents/Coding
+Terminal=false
+Categories=System;Utility;

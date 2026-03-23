@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Shared hacker-themed terminal GUI using a persistent bash session."""
+
+from __future__ import annotations
+
+import os
+import queue
+import random
+import signal
+import subprocess
+import threading
+import tkinter as tk
+from tkinter import font as tkfont
+
+
+class HackerTerminal:
+    """A lightweight terminal UI that talks to a real bash process through a PTY."""
+
+    def __init__(self, config: dict[str, str]) -> None:
+        self.config = config
+        self.root = tk.Tk()
+        self.root.title(config["title"])
+        self.root.geometry(config.get("geometry", "1000x680"))
+        self.root.minsize(780, 500)
+        self.root.configure(bg=config["bg"])
+
+        self.output_queue: queue.Queue[str] = queue.Queue()
+        self.command_history: list[str] = []
+        self.history_index = 0
+
+        self.boot_lines: list[str] = config.get(
+            "boot_lines",
+            [
+                "Initializing secure terminal bus...",
+                "Loading shell transport layer...",
+                "Mounting command history cache...",
+                "Arming prompt subsystem...",
+            ],
+        )
+        self.boot_index = 0
+        self.boot_complete = False
+
+        self.master_fd: int | None = None
+        self.shell_process: subprocess.Popen[bytes] | None = None
+
+        self._build_ui()
+        self._start_shell()
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.after(20, self._flush_output)
+        self.root.after(120, self._animate_scanline)
+        self.root.after(180, self._run_boot_sequence)
+
+    def _build_ui(self) -> None:
+        title_font = tkfont.Font(family=self.config.get("font", "DejaVu Sans Mono"), size=14, weight="bold")
+        body_font = tkfont.Font(family=self.config.get("font", "DejaVu Sans Mono"), size=11)
+
+        top_bar = tk.Frame(self.root, bg=self.config["panel"])
+        top_bar.pack(fill="x")
+
+        title = tk.Label(
+            top_bar,
+            text=self.config["banner"],
+            bg=self.config["panel"],
+            fg=self.config["accent"],
+            font=title_font,
+            pady=8,
+        )
+        title.pack(side="left", padx=12)
+
+        self.status = tk.Label(
+            top_bar,
+            text="BOOTING",
+            bg=self.config["panel"],
+            fg=self.config["accent2"],
+            font=(self.config.get("font", "DejaVu Sans Mono"), 10, "bold"),
+            pady=8,
+        )
+        self.status.pack(side="right", padx=12)
+
+        self.output = tk.Text(
+            self.root,
+            bg=self.config["bg"],
+            fg=self.config["fg"],
+            insertbackground=self.config["accent"],
+            selectbackground=self.config["select"],
+            relief="flat",
+            wrap="word",
+            font=body_font,
+            padx=12,
+            pady=10,
+        )
+        self.output.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+        self.output.configure(state="disabled")
+
+        self.scanline = tk.Canvas(
+            self.output,
+            bg=self.config["bg"],
+            highlightthickness=0,
+            bd=0,
+        )
+        self.scanline.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.scanline.bind("<Configure>", self._draw_scanlines)
+        self.scanline.configure(state="disabled")
+
+        prompt_frame = tk.Frame(self.root, bg=self.config["panel"])
+        prompt_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        self.prompt_label = tk.Label(
+            prompt_frame,
+            text=self.config["prompt"],
+            bg=self.config["panel"],
+            fg=self.config["accent"],
+            font=(self.config.get("font", "DejaVu Sans Mono"), 11, "bold"),
+            padx=10,
+            pady=8,
+        )
+        self.prompt_label.pack(side="left")
+
+        self.command_entry = tk.Entry(
+            prompt_frame,
+            bg=self.config["input_bg"],
+            fg=self.config["fg"],
+            insertbackground=self.config["accent"],
+            relief="flat",
+            font=body_font,
+        )
+        self.command_entry.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
+        self.command_entry.configure(state="disabled")
+
+        send_button = tk.Button(
+            prompt_frame,
+            text="EXEC",
+            bg=self.config["button_bg"],
+            fg=self.config["button_fg"],
+            activebackground=self.config["button_active_bg"],
+            activeforeground=self.config["button_fg"],
+            relief="flat",
+            bd=0,
+            padx=15,
+            pady=8,
+            font=(self.config.get("font", "DejaVu Sans Mono"), 10, "bold"),
+            command=self._submit_command,
+        )
+        send_button.pack(side="right", padx=6)
+
+        self.command_entry.bind("<Return>", lambda _event: self._submit_command())
+        self.command_entry.bind("<Up>", self._history_up)
+        self.command_entry.bind("<Down>", self._history_down)
+
+    def _start_shell(self) -> None:
+        self.master_fd, slave_fd = os.openpty()
+
+        env = os.environ.copy()
+        env["TERM"] = "xterm-256color"
+
+        self.shell_process = subprocess.Popen(
+            ["/bin/bash", "-i"],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+            env=env,
+        )
+        os.close(slave_fd)
+
+        reader = threading.Thread(target=self._reader_loop, daemon=True)
+        reader.start()
+
+    def _write_intro(self) -> None:
+        intro = (
+            f"[{self.config['codename']}] shell online\n"
+            "Running real /bin/bash in a persistent session.\n"
+            "Use command history with Up/Down arrows.\n"
+            "Type 'exit' to close shell process.\n\n"
+        )
+        self._append_text(intro)
+
+    def _draw_scanlines(self, _event: tk.Event | None = None) -> None:
+        self.scanline.delete("grid")
+        width = max(self.scanline.winfo_width(), 1)
+        height = max(self.scanline.winfo_height(), 1)
+        line_color = self.config.get("scanline_color", "#0f2012")
+        for y in range(0, height, 4):
+            self.scanline.create_line(0, y, width, y, fill=line_color, tags="grid")
+
+    def _animate_scanline(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        self.scanline.delete("pulse")
+        width = max(self.scanline.winfo_width(), 1)
+        height = max(self.scanline.winfo_height(), 1)
+        y = random.randint(0, max(height - 1, 0))
+        pulse_color = self.config.get("scanline_pulse", self.config["accent"])
+        self.scanline.create_line(0, y, width, y, fill=pulse_color, tags="pulse")
+        self.root.after(140, self._animate_scanline)
+
+    def _run_boot_sequence(self) -> None:
+        if self.boot_index < len(self.boot_lines):
+            line = self.boot_lines[self.boot_index]
+            self._append_text(f"[boot] {line}\n")
+            self.boot_index += 1
+            self.root.after(150, self._run_boot_sequence)
+            return
+
+        if not self.boot_complete:
+            self.boot_complete = True
+            self.command_entry.configure(state="normal")
+            self.command_entry.focus_set()
+            self.status.configure(text="ONLINE")
+            self._write_intro()
+
+    def _reader_loop(self) -> None:
+        if self.master_fd is None:
+            return
+        while True:
+            try:
+                data = os.read(self.master_fd, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            self.output_queue.put(data.decode(errors="replace"))
+        self.output_queue.put("\n[shell disconnected]\n")
+
+    def _flush_output(self) -> None:
+        while not self.output_queue.empty():
+            chunk = self.output_queue.get_nowait()
+            self._append_text(chunk)
+        self.root.after(20, self._flush_output)
+
+    def _append_text(self, text: str) -> None:
+        self.output.configure(state="normal")
+        self.output.insert("end", text)
+        self.output.see("end")
+        self.output.configure(state="disabled")
+
+    def _submit_command(self) -> None:
+        if self.master_fd is None:
+            return
+        if not self.boot_complete:
+            return
+        command = self.command_entry.get()
+        if command.strip():
+            self.command_history.append(command)
+            self.history_index = len(self.command_history)
+        os.write(self.master_fd, (command + "\n").encode())
+        self.command_entry.delete(0, "end")
+
+    def _history_up(self, _event: tk.Event) -> str:
+        if not self.command_history:
+            return "break"
+        self.history_index = max(0, self.history_index - 1)
+        self.command_entry.delete(0, "end")
+        self.command_entry.insert(0, self.command_history[self.history_index])
+        return "break"
+
+    def _history_down(self, _event: tk.Event) -> str:
+        if not self.command_history:
+            return "break"
+        self.history_index = min(len(self.command_history), self.history_index + 1)
+        self.command_entry.delete(0, "end")
+        if self.history_index < len(self.command_history):
+            self.command_entry.insert(0, self.command_history[self.history_index])
+        return "break"
+
+    def on_close(self) -> None:
+        if self.shell_process and self.shell_process.poll() is None:
+            try:
+                os.killpg(self.shell_process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        if self.master_fd is not None:
+            try:
+                os.close(self.master_fd)
+            except OSError:
+                pass
+            self.master_fd = None
+        self.root.destroy()
+
+    def run(self) -> None:
+        self.root.mainloop()
