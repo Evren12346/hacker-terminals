@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import os
 import queue
+import random
 import re
 import signal
 import subprocess
 import threading
+import time
 import tkinter as tk
 from tkinter import font as tkfont
 
@@ -29,6 +31,9 @@ class HackerTerminal:
         self.output_queue: queue.Queue[str] = queue.Queue()
         self.command_history: list[str] = []
         self.history_index = 0
+        self.prompt_visible = True
+        self.signal_frames = ["SIG [|||||]", "SIG [|||| ]", "SIG [|||  ]", "SIG [||   ]", "SIG [|    ]"]
+        self.signal_index = 0
 
         self.boot_lines: list[str] = config.get(
             "boot_lines",
@@ -52,6 +57,10 @@ class HackerTerminal:
         self.root.after(20, self._flush_output)
         self.root.after(220, self._animate_status_pulse)
         self.root.after(180, self._run_boot_sequence)
+        self.root.after(200, self._update_clock)
+        self.root.after(260, self._update_signal)
+        self.root.after(300, self._blink_prompt)
+        self.root.after(340, self._update_ticker)
 
     def _build_ui(self) -> None:
         title_font = tkfont.Font(family=self.config.get("font", "DejaVu Sans Mono"), size=14, weight="bold")
@@ -81,7 +90,39 @@ class HackerTerminal:
             font=(self.config.get("font", "DejaVu Sans Mono"), 10, "bold"),
             pady=8,
         )
-        self.status.pack(side="right", padx=12)
+        self.status.pack(side="right", padx=(8, 12))
+
+        self.clock = tk.Label(
+            top_bar,
+            text="00:00:00",
+            bg=self.config["panel"],
+            fg=self.config["accent"],
+            font=(self.config.get("font", "DejaVu Sans Mono"), 10, "bold"),
+            pady=8,
+        )
+        self.clock.pack(side="right", padx=(8, 0))
+
+        self.signal = tk.Label(
+            top_bar,
+            text=self.signal_frames[0],
+            bg=self.config["panel"],
+            fg=self.config["accent2"],
+            font=(self.config.get("font", "DejaVu Sans Mono"), 10, "bold"),
+            pady=8,
+        )
+        self.signal.pack(side="right", padx=(0, 8))
+
+        self.ticker = tk.Label(
+            self.root,
+            text="",
+            bg=self.config["bg"],
+            fg=self.config["accent2"],
+            anchor="w",
+            font=(self.config.get("font", "DejaVu Sans Mono"), 9),
+            padx=12,
+            pady=3,
+        )
+        self.ticker.pack(fill="x")
 
         output_frame = tk.Frame(self.root, bg=self.config["panel"])
         output_frame.pack(fill="both", expand=True, padx=10, pady=(10, 6))
@@ -203,6 +244,33 @@ class HackerTerminal:
         next_fg = self.config["accent"] if current_fg == self.config["accent2"] else self.config["accent2"]
         self.status.configure(fg=next_fg)
         self.root.after(380, self._animate_status_pulse)
+
+    def _update_clock(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        self.clock.configure(text=time.strftime("%H:%M:%S"))
+        self.root.after(500, self._update_clock)
+
+    def _update_signal(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        self.signal_index = (self.signal_index + 1) % len(self.signal_frames)
+        self.signal.configure(text=self.signal_frames[self.signal_index])
+        self.root.after(260, self._update_signal)
+
+    def _blink_prompt(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        self.prompt_visible = not self.prompt_visible
+        self.prompt_label.configure(fg=self.config["accent"] if self.prompt_visible else self.config["accent2"])
+        self.root.after(420, self._blink_prompt)
+
+    def _update_ticker(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        noise = "".join(random.choice("01ABCDEF") for _ in range(32))
+        self.ticker.configure(text=f"NET TRACE :: {noise} :: AUTH-OK")
+        self.root.after(280, self._update_ticker)
 
     def _run_boot_sequence(self) -> None:
         if self.boot_index < len(self.boot_lines):

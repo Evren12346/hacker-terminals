@@ -6,22 +6,22 @@ from hacker_terminal_base import HackerTerminal
 
 UBUNTU_CONFIG = {
     "title": "Ubuntu Hacker Terminal",
-    "banner": "UBUNTU // CYBER OPS CONSOLE",
+    "banner": "UBUNTU // ACCESS NODE // OPERATOR",
     "codename": "UBN-XTERM",
     "prompt": "user@ubuntu:~$",
     "geometry": "1060x700",
     "font": "DejaVu Sans Mono",
     "output_font_size": "12",
-    "bg": "#020702",
-    "panel": "#071007",
-    "fg": "#b9ffb9",
-    "accent": "#29ff5d",
-    "accent2": "#73ff8f",
-    "select": "#104d10",
-    "input_bg": "#050d05",
-    "button_bg": "#0c220c",
-    "button_active_bg": "#144014",
-    "button_fg": "#d9ffd9",
+    "bg": "#010401",
+    "panel": "#051005",
+    "fg": "#c8ffc8",
+    "accent": "#39ff66",
+    "accent2": "#8fffaa",
+    "select": "#0f4f12",
+    "input_bg": "#030803",
+    "button_bg": "#0a2b0a",
+    "button_active_bg": "#185618",
+    "button_fg": "#e8ffe8",
 }
 
 

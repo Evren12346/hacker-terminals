@@ -6,22 +6,22 @@ from hacker_terminal_base import HackerTerminal
 
 KALI_CONFIG = {
     "title": "Kali Hacker Terminal",
-    "banner": "KALI // OPERATOR CONSOLE",
+    "banner": "KALI // RED CELL // ACCESS CORE",
     "codename": "KALI-RTI",
     "prompt": "root@kali:~#",
     "geometry": "1060x700",
     "font": "DejaVu Sans Mono",
     "output_font_size": "12",
-    "bg": "#010501",
-    "panel": "#050d05",
-    "fg": "#c5ffc5",
-    "accent": "#3aff55",
-    "accent2": "#8dff9a",
-    "select": "#0f4a16",
-    "input_bg": "#040904",
-    "button_bg": "#0a1c0a",
-    "button_active_bg": "#174217",
-    "button_fg": "#ddffdd",
+    "bg": "#000300",
+    "panel": "#041004",
+    "fg": "#caffca",
+    "accent": "#31ff4f",
+    "accent2": "#9cff9c",
+    "select": "#0c4a0f",
+    "input_bg": "#020702",
+    "button_bg": "#092809",
+    "button_active_bg": "#186318",
+    "button_fg": "#e4ffe4",
 }
 
 
