@@ -52,7 +52,10 @@ class HackerTerminal:
 
     def _build_ui(self) -> None:
         title_font = tkfont.Font(family=self.config.get("font", "DejaVu Sans Mono"), size=14, weight="bold")
-        body_font = tkfont.Font(family=self.config.get("font", "DejaVu Sans Mono"), size=11)
+        body_font = tkfont.Font(
+            family=self.config.get("font", "DejaVu Sans Mono"),
+            size=int(self.config.get("output_font_size", "12")),
+        )
 
         top_bar = tk.Frame(self.root, bg=self.config["panel"])
         top_bar.pack(fill="x")
@@ -77,19 +80,43 @@ class HackerTerminal:
         )
         self.status.pack(side="right", padx=12)
 
+        output_frame = tk.Frame(self.root, bg=self.config["panel"])
+        output_frame.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+
         self.output = tk.Text(
-            self.root,
+            output_frame,
             bg=self.config["bg"],
             fg=self.config["fg"],
             insertbackground=self.config["accent"],
             selectbackground=self.config["select"],
             relief="flat",
-            wrap="word",
+            wrap="none",
             font=body_font,
             padx=12,
             pady=10,
         )
-        self.output.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+
+        self.v_scroll = tk.Scrollbar(
+            output_frame,
+            orient="vertical",
+            command=self.output.yview,
+            bg=self.config["panel"],
+            troughcolor=self.config["input_bg"],
+            activebackground=self.config["button_active_bg"],
+        )
+        self.h_scroll = tk.Scrollbar(
+            output_frame,
+            orient="horizontal",
+            command=self.output.xview,
+            bg=self.config["panel"],
+            troughcolor=self.config["input_bg"],
+            activebackground=self.config["button_active_bg"],
+        )
+        self.output.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
+
+        self.v_scroll.pack(side="right", fill="y")
+        self.h_scroll.pack(side="bottom", fill="x")
+        self.output.pack(side="left", fill="both", expand=True)
         self.output.configure(state="disabled")
 
         prompt_frame = tk.Frame(self.root, bg=self.config["panel"])
@@ -136,6 +163,7 @@ class HackerTerminal:
         self.command_entry.bind("<Return>", lambda _event: self._submit_command())
         self.command_entry.bind("<Up>", self._history_up)
         self.command_entry.bind("<Down>", self._history_down)
+        self.command_entry.bind("<Control-l>", self._clear_via_shortcut)
 
     def _start_shell(self) -> None:
         self.master_fd, slave_fd = os.openpty()
@@ -213,12 +241,25 @@ class HackerTerminal:
         self.output.see("end")
         self.output.configure(state="disabled")
 
+    def _clear_output_screen(self) -> None:
+        self.output.configure(state="normal")
+        self.output.delete("1.0", "end")
+        self.output.configure(state="disabled")
+
+    def _clear_via_shortcut(self, _event: tk.Event) -> str:
+        self._clear_output_screen()
+        return "break"
+
     def _submit_command(self) -> None:
         if self.master_fd is None:
             return
         if not self.boot_complete:
             return
         command = self.command_entry.get()
+        if command.strip().lower() in {"clear", "cls"}:
+            self._clear_output_screen()
+            self.command_entry.delete(0, "end")
+            return
         if command.strip():
             self.command_history.append(command)
             self.history_index = len(self.command_history)
