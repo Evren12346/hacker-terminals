@@ -28,6 +28,7 @@ KALI_CONFIG = {
         "[ OK ] Establishing PTY transport...",
         "[ OK ] Initializing exploit framework...",
         "[ OK ] Enabling stealth mode...",
+        "[ OK ] Activating advanced terminal features...",
         "[ OK ] Arming prompt subsystem...",
         "[ OK ] Red cell is online. Stay quiet.",
     ],

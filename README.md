@@ -4,6 +4,9 @@ Two themed Python terminal GUIs that run a real persistent bash shell:
 - Ubuntu Hacker Terminal
 - Kali Hacker Terminal
 
+This folder is the canonical home for the terminal scripts and desktop launchers.
+Older duplicate copies from the repository root are archived under `../archive/root_duplicates`.
+
 ## Requirements
 - Python 3
 - Tkinter (usually preinstalled on Ubuntu/Kali)
@@ -29,3 +32,4 @@ This creates:
 - Desktop launcher files are included:
   - `UbuntuHackerTerminal.desktop`
   - `KaliHackerTerminal.desktop`
+- The launcher files point at this folder, so the project is self-contained.

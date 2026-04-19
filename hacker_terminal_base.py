@@ -8,6 +8,7 @@ import queue
 import random
 import re
 import signal
+import struct
 import subprocess
 import threading
 import time
@@ -58,6 +59,10 @@ class HackerTerminal:
         self._session_start = time.monotonic()
         self._base_font_size = int(config.get("output_font_size", "12"))
         self._current_font_size = self._base_font_size
+
+        # Session management
+        self.session_file = os.path.expanduser(f"~/.{config.get('codename', 'terminal').lower()}_session")
+        self._load_session()
 
         self.boot_lines: list[str] = config.get(
             "boot_lines",
@@ -228,22 +233,59 @@ class HackerTerminal:
         )
         send_button.pack(side="right", padx=6)
 
-        self.command_entry.bind("<Return>", lambda _event: self._submit_command())
-        self.command_entry.bind("<Up>", self._history_up)
-        self.command_entry.bind("<Down>", self._history_down)
         self.command_entry.bind("<Control-l>", self._clear_via_shortcut)
         self.command_entry.bind("<Control-c>", self._send_sigint)
         self.command_entry.bind("<Control-d>", self._send_eof)
         self.command_entry.bind("<Tab>", self._send_tab)
+        self.command_entry.bind("<Control-a>", self._select_all_input)
+        self.command_entry.bind("<Control-u>", self._clear_line_to_start)
+        self.command_entry.bind("<Control-k>", self._clear_line_to_end)
+        self.command_entry.bind("<Control-w>", self._delete_word_backward)
+        self.command_entry.bind("<Control-y>", self._paste_from_clipboard)
 
         # Copy selected text from output pane with Ctrl+Shift+C
         self.root.bind("<Control-Shift-c>", self._copy_output_selection)
-
+        self.root.bind("<Control-Shift-C>", self._copy_output_selection)
+        
+        # Paste into input with Ctrl+V and middle-click
+        self.root.bind("<Control-v>", self._paste_to_input)
+        self.root.bind("<Control-V>", self._paste_to_input)
+        self.command_entry.bind("<Button-2>", self._middle_click_paste)
+        
+        # Search functionality
+        self.root.bind("<Control-f>", self._open_search)
+        self.root.bind("<Control-F>", self._open_search)
+        
+        # Select all in output
+        self.output.bind("<Control-a>", self._select_all_output)
+        self.output.bind("<Control-A>", self._select_all_output)
+        
+        # Right-click context menu
+        self.output.bind("<Button-3>", self._show_context_menu)
+        self.command_entry.bind("<Button-3>", self._show_input_context_menu)
+        
+        # Mouse wheel scrolling
+        self.output.bind("<MouseWheel>", self._mouse_wheel)
+        self.output.bind("<Button-4>", self._mouse_wheel)  # Linux scroll up
+        self.output.bind("<Button-5>", self._mouse_wheel)  # Linux scroll down
+        
+        # Handle window resizing
+        self.root.bind("<Configure>", self._handle_resize)
+        
         # Font scaling
         self.root.bind("<Control-equal>", self._font_size_up)
         self.root.bind("<Control-plus>", self._font_size_up)
         self.root.bind("<Control-minus>", self._font_size_down)
         self.root.bind("<Control-0>", self._font_size_reset)
+        
+        # Additional keyboard shortcuts
+        self.root.bind("<Control-r>", self._reverse_search)
+        self.root.bind("<Control-R>", self._reverse_search)
+        self.root.bind("<F11>", self._toggle_fullscreen)
+        self.root.bind("<Escape>", self._escape_handler)
+        
+        # Track shell busy state
+        self.shell_busy = False
 
     def _start_shell(self) -> None:
         self.master_fd, slave_fd = os.openpty()
@@ -273,8 +315,17 @@ class HackerTerminal:
             "  Ctrl+C         : interrupt running process\n"
             "  Ctrl+D         : send EOF / logout\n"
             "  Ctrl+L         : clear screen\n"
+            "  Ctrl+A         : select all in input\n"
+            "  Ctrl+U         : clear to line start\n"
+            "  Ctrl+K         : clear to line end\n"
+            "  Ctrl+W         : delete word backward\n"
+            "  Ctrl+Y         : paste from clipboard\n"
+            "  Ctrl+V         : paste to input\n"
+            "  Ctrl+F         : search output\n"
             "  Ctrl++ / Ctrl- : adjust font size  |  Ctrl+0 : reset\n"
-            "  Ctrl+Shift+C   : copy selected output\n\n"
+            "  Ctrl+Shift+C   : copy selected output\n"
+            "  Right-click     : context menu\n"
+            "  Middle-click    : paste\n\n"
         )
         self._append_text(intro)
 
@@ -344,19 +395,150 @@ class HackerTerminal:
                 break
             self.output_queue.put(data.decode(errors="replace"))
         self.output_queue.put("\n[shell disconnected]\n")
+        # Try to restart shell if it disconnected unexpectedly
+        self.root.after(1000, self._attempt_shell_restart)
+
+    def _attempt_shell_restart(self) -> None:
+        """Attempt to restart the shell if it disconnected."""
+        if self.shell_process and self.shell_process.poll() is None:
+            return  # Shell is still running
+            
+        self._append_text("\n[attempting to restart shell...]\n")
+        try:
+            self._start_shell()
+            self._append_text("[shell restarted successfully]\n")
+        except Exception as e:
+            self._append_text(f"[failed to restart shell: {e}]\n")
+            self.status.configure(text="ERROR")
+
+    def _visual_bell(self) -> None:
+        """Flash the status bar as a visual bell."""
+        original_bg = self.status.cget("bg")
+        self.status.configure(bg=self.config["accent"])
+        self.root.after(100, lambda: self.status.configure(bg=original_bg))
+
+    def _submit_command(self) -> None:
+        if self.master_fd is None:
+            return
+        if not self.boot_complete:
+            return
+        command = self.command_entry.get()
+        if command.strip().lower() in {"clear", "cls"}:
+            self._clear_output_screen()
+            self.command_entry.delete(0, "end")
+            return
+        if command.strip():
+            self.command_history.append(command)
+            self.history_index = len(self.command_history)
+            self._save_session()  # Save session after each command
+            self.shell_busy = True
+            self.status.configure(text="BUSY")
+        os.write(self.master_fd, (command + "\n").encode())
+        self.command_entry.delete(0, "end")
 
     def _flush_output(self) -> None:
         while not self.output_queue.empty():
             chunk = self.output_queue.get_nowait()
             self._append_text(chunk)
+            
+            # Check if command completed (look for prompt)
+            if self.prompt_visible and self.shell_busy:
+                self.shell_busy = False
+                self.status.configure(text="ONLINE")
+                
         self.root.after(20, self._flush_output)
 
+    def _update_terminal_size(self) -> None:
+        """Update the PTY terminal size based on window dimensions."""
+        if self.master_fd is None or self.shell_process is None:
+            return
+            
+        try:
+            import fcntl
+            import termios
+            
+            # Get current window dimensions
+            output_width = self.output.winfo_width()
+            output_height = self.output.winfo_height()
+            
+            # Estimate character dimensions (rough approximation)
+            char_width = self._body_font.measure("M")
+            char_height = self._body_font.metrics("linespace")
+            
+            if char_width > 0 and char_height > 0:
+                cols = max(80, output_width // char_width)
+                rows = max(24, output_height // char_height)
+                
+                # Set terminal size
+                size = struct.pack("HHHH", rows, cols, 0, 0)
+                fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, size)
+                
+                # Send SIGWINCH to shell to notify of size change
+                try:
+                    self.shell_process.send_signal(signal.SIGWINCH)
+                except ProcessLookupError:
+                    pass
+        except (ImportError, OSError):
+            pass  # Gracefully handle systems that don't support this
+
     def _append_text(self, text: str) -> None:
+        """Append text to output with improved ANSI handling and URL detection."""
+        # Handle ANSI escape sequences for colors and formatting
+        self._process_ansi_text(text)
+        
+        # Detect and make URLs clickable
+        self._detect_and_highlight_urls()
+
+    def _process_ansi_text(self, text: str) -> None:
+        """Process text with ANSI escape sequences for colors and formatting."""
+        # For now, we'll strip ANSI codes but could implement full color support
+        # This is a simplified version - full ANSI parsing would be more complex
         clean_text = self.ANSI_ESCAPE_RE.sub("", text)
+        
         self.output.configure(state="normal")
         self.output.insert("end", clean_text)
         self.output.see("end")
         self.output.configure(state="disabled")
+
+    def _detect_and_highlight_urls(self) -> None:
+        """Detect URLs in the output and make them clickable."""
+        content = self.output.get("1.0", "end-1c")
+        
+        # Simple URL regex pattern
+        url_pattern = r'https?://(?:[-\w.])+(?:[:\d]+)?(?:/(?:[\w/_.])*(?:\?(?:[\w&=%.])*)?(?:#(?:\w)*)?)?'
+        
+        # Remove existing URL tags
+        self.output.tag_remove("url", "1.0", "end")
+        
+        for match in re.finditer(url_pattern, content):
+            start_idx = self._get_text_index(match.start())
+            end_idx = self._get_text_index(match.end())
+            
+            self.output.tag_add("url", start_idx, end_idx)
+            self.output.tag_config("url", foreground=self.config["accent"], underline=True)
+            self.output.tag_bind("url", "<Button-1>", 
+                               lambda e, url=match.group(): self._open_url(url))
+            self.output.tag_bind("url", "<Enter>", 
+                               lambda e: self.output.config(cursor="hand2"))
+            self.output.tag_bind("url", "<Leave>", 
+                               lambda e: self.output.config(cursor=""))
+
+    def _get_text_index(self, char_pos: int) -> str:
+        """Convert character position to text widget index."""
+        content = self.output.get("1.0", "end-1c")
+        line = content[:char_pos].count('\n') + 1
+        line_start = content.rfind('\n', 0, char_pos)
+        if line_start == -1:
+            line_start = 0
+        else:
+            line_start += 1
+        char = char_pos - line_start
+        return f"{line}.{char}"
+
+    def _open_url(self, url: str) -> None:
+        """Open URL in default browser."""
+        import webbrowser
+        webbrowser.open(url)
 
     def _clear_output_screen(self) -> None:
         self.output.configure(state="normal")
@@ -395,15 +577,187 @@ class HackerTerminal:
         os.write(self.master_fd, b"\t")
         return "break"
 
-    def _copy_output_selection(self, _event: tk.Event) -> str:
-        """Copy the currently selected text in the output pane to the clipboard."""
+    def _select_all_input(self, _event: tk.Event) -> str:
+        """Select all text in the input field."""
+        self.command_entry.select_range(0, "end")
+        return "break"
+
+    def _clear_line_to_start(self, _event: tk.Event) -> str:
+        """Clear from cursor to start of line (Ctrl+U)."""
+        self.command_entry.delete(0, "insert")
+        return "break"
+
+    def _clear_line_to_end(self, _event: tk.Event) -> str:
+        """Clear from cursor to end of line (Ctrl+K)."""
+        self.command_entry.delete("insert", "end")
+        return "break"
+
+    def _delete_word_backward(self, _event: tk.Event) -> str:
+        """Delete word backward (Ctrl+W)."""
+        current = self.command_entry.index("insert")
+        text = self.command_entry.get()
+        # Find the start of the current word
+        word_start = current
+        while word_start > 0 and text[word_start - 1].isspace():
+            word_start -= 1
+        while word_start > 0 and not text[word_start - 1].isspace():
+            word_start -= 1
+        self.command_entry.delete(word_start, current)
+        return "break"
+
+    def _paste_from_clipboard(self, _event: tk.Event) -> str:
+        """Paste from clipboard (Ctrl+Y)."""
+        try:
+            clipboard = self.root.clipboard_get()
+            self.command_entry.insert("insert", clipboard)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _paste_to_input(self, _event: tk.Event) -> str:
+        """Paste clipboard content into input field."""
+        try:
+            clipboard = self.root.clipboard_get()
+            self.command_entry.insert("insert", clipboard)
+            self.command_entry.focus_set()
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _middle_click_paste(self, _event: tk.Event) -> str:
+        """Handle middle-click paste."""
+        return self._paste_to_input(_event)
+
+    def _open_search(self, _event: tk.Event) -> str:
+        """Open search dialog for output text."""
+        self._create_search_dialog()
+        return "break"
+
+    def _create_search_dialog(self) -> None:
+        """Create a search dialog for finding text in output."""
+        if hasattr(self, 'search_dialog') and self.search_dialog.winfo_exists():
+            self.search_dialog.lift()
+            self.search_entry.focus_set()
+            return
+            
+        self.search_dialog = tk.Toplevel(self.root)
+        self.search_dialog.title("Search Output")
+        self.search_dialog.geometry("400x120")
+        self.search_dialog.resizable(False, False)
+        self.search_dialog.configure(bg=self.config["panel"])
+        
+        # Search entry
+        search_frame = tk.Frame(self.search_dialog, bg=self.config["panel"])
+        search_frame.pack(fill="x", padx=10, pady=10)
+        
+        tk.Label(search_frame, text="Search:", bg=self.config["panel"], 
+                fg=self.config["fg"]).pack(side="left")
+        
+        self.search_entry = tk.Entry(search_frame, bg=self.config["input_bg"], 
+                                   fg=self.config["fg"], width=30)
+        self.search_entry.pack(side="left", padx=(5, 0))
+        self.search_entry.bind("<Return>", self._perform_search)
+        
+        # Buttons
+        button_frame = tk.Frame(self.search_dialog, bg=self.config["panel"])
+        button_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+        tk.Button(button_frame, text="Find Next", command=self._perform_search,
+                 bg=self.config["button_bg"], fg=self.config["button_fg"],
+                 activebackground=self.config["button_active_bg"]).pack(side="left", padx=(0, 5))
+        
+        tk.Button(button_frame, text="Close", command=self.search_dialog.destroy,
+                 bg=self.config["button_bg"], fg=self.config["button_fg"],
+                 activebackground=self.config["button_active_bg"]).pack(side="left")
+        
+        self.search_entry.focus_set()
+
+    def _perform_search(self, _event: tk.Event | None = None) -> None:
+        """Perform search in output text."""
+        search_term = self.search_entry.get().strip()
+        if not search_term:
+            return
+            
+        # Get current output content
+        content = self.output.get("1.0", "end-1c")
+        
+        # Find current insertion point
+        current_pos = self.output.index("insert")
+        
+        # Search from current position onward
+        start_index = content.find(search_term, int(float(current_pos.split('.')[0])) - 1)
+        if start_index == -1:
+            # Wrap around to beginning
+            start_index = content.find(search_term)
+            
+        if start_index != -1:
+            # Convert to text widget indices
+            line = content[:start_index].count('\n') + 1
+            char = start_index - content.rfind('\n', 0, start_index)
+            start_idx = f"{line}.{char}"
+            end_idx = f"{line}.{char + len(search_term)}"
+            
+            # Select and scroll to the found text
+            self.output.tag_remove("search", "1.0", "end")
+            self.output.tag_add("search", start_idx, end_idx)
+            self.output.tag_config("search", background=self.config["select"])
+            self.output.mark_set("insert", end_idx)
+            self.output.see(start_idx)
+        else:
+            # Clear previous search highlights
+            self.output.tag_remove("search", "1.0", "end")
+
+    def _select_all_output(self, _event: tk.Event) -> str:
+        """Select all text in output pane."""
+        self.output.tag_add("sel", "1.0", "end-1c")
+        return "break"
+
+    def _show_context_menu(self, event: tk.Event) -> None:
+        """Show context menu for output pane."""
+        menu = tk.Menu(self.root, tearoff=0, bg=self.config["panel"], fg=self.config["fg"])
+        menu.add_command(label="Copy", command=self._copy_output_selection_menu)
+        menu.add_command(label="Select All", command=lambda: self._select_all_output(event))
+        menu.add_separator()
+        menu.add_command(label="Clear Screen", command=self._clear_output_screen)
+        menu.add_command(label="Search...", command=self._create_search_dialog)
+        
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _show_input_context_menu(self, event: tk.Event) -> None:
+        """Show context menu for input field."""
+        menu = tk.Menu(self.root, tearoff=0, bg=self.config["panel"], fg=self.config["fg"])
+        menu.add_command(label="Paste", command=lambda: self._paste_to_input(event))
+        menu.add_command(label="Select All", command=lambda: self._select_all_input(event))
+        
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copy_output_selection_menu(self) -> None:
+        """Copy selected text from output pane (menu version)."""
         try:
             selected = self.output.get(tk.SEL_FIRST, tk.SEL_LAST)
             self.root.clipboard_clear()
             self.root.clipboard_append(selected)
         except tk.TclError:
             pass
-        return "break"
+
+    def _mouse_wheel(self, event: tk.Event) -> None:
+        """Handle mouse wheel scrolling."""
+        if event.delta > 0:
+            self.output.yview_scroll(-1, "units")
+        else:
+            self.output.yview_scroll(1, "units")
+
+    def _handle_resize(self, event: tk.Event) -> None:
+        """Handle window resize events."""
+        if event.widget == self.root:
+            # Update terminal size if PTY supports it
+            self._update_terminal_size()
 
     def _font_size_up(self, _event: tk.Event) -> str:
         self._set_font_size(self._current_font_size + 1)
@@ -417,9 +771,56 @@ class HackerTerminal:
         self._set_font_size(self._base_font_size)
         return "break"
 
+    def _reverse_search(self, _event: tk.Event) -> str:
+        """Open reverse search (Ctrl+R) - simplified version."""
+        self._create_search_dialog()
+        return "break"
+
+    def _toggle_fullscreen(self, _event: tk.Event) -> str:
+        """Toggle fullscreen mode."""
+        current_state = self.root.attributes("-fullscreen")
+        self.root.attributes("-fullscreen", not current_state)
+        return "break"
+
+    def _escape_handler(self, _event: tk.Event) -> str:
+        """Handle Escape key - clear search or close dialogs."""
+        if hasattr(self, 'search_dialog') and self.search_dialog.winfo_exists():
+            self.search_dialog.destroy()
+            return "break"
+        return "break"
+
     def _set_font_size(self, size: int) -> None:
         self._current_font_size = size
         self._body_font.configure(size=size)
+        self._save_session()  # Save font size change
+
+    def _load_session(self) -> None:
+        """Load command history and settings from session file."""
+        try:
+            if os.path.exists(self.session_file):
+                with open(self.session_file, 'r', encoding='utf-8') as f:
+                    import json
+                    session_data = json.load(f)
+                    self.command_history = session_data.get('history', [])
+                    self.history_index = len(self.command_history)
+                    self._current_font_size = session_data.get('font_size', self._base_font_size)
+                    self._set_font_size(self._current_font_size)
+        except (OSError, json.JSONDecodeError, KeyError):
+            pass  # Use defaults if session file is corrupted
+
+    def _save_session(self) -> None:
+        """Save command history and settings to session file."""
+        try:
+            session_data = {
+                'history': self.command_history[-1000:],  # Keep last 1000 commands
+                'font_size': self._current_font_size,
+                'timestamp': time.time()
+            }
+            with open(self.session_file, 'w', encoding='utf-8') as f:
+                import json
+                json.dump(session_data, f, indent=2)
+        except OSError:
+            pass  # Silently fail if we can't save session
 
     def _submit_command(self) -> None:
         if self.master_fd is None:
@@ -434,6 +835,7 @@ class HackerTerminal:
         if command.strip():
             self.command_history.append(command)
             self.history_index = len(self.command_history)
+            self._save_session()  # Save session after each command
         os.write(self.master_fd, (command + "\n").encode())
         self.command_entry.delete(0, "end")
 
@@ -455,6 +857,7 @@ class HackerTerminal:
         return "break"
 
     def on_close(self) -> None:
+        self._save_session()  # Save session on exit
         if self.shell_process and self.shell_process.poll() is None:
             try:
                 os.killpg(self.shell_process.pid, signal.SIGTERM)
